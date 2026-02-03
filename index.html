@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>駕駛路線優化模型 (Tai Wai -> Chai Wan)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f3f4f6; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-6xl mx-auto space-y-6">
+        
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">🚗 駕駛路線優化模型</h1>
+            <p class="text-gray-600">由大圍前往柴灣 (Tai Wai to Chai Wan)</p>
+        </header>
+
+        <!-- Control Panel -->
+        <div class="card p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+            
+            <!-- Time Settings -->
+            <div>
+                <h2 class="text-xl font-semibold mb-4 text-blue-600"><i class="far fa-clock"></i> 設定到達時間</h2>
+                <div class="flex items-center space-x-4">
+                    <label class="font-medium text-gray-700">預計到達柴灣時間 (Target Arrival):</label>
+                    <input type="time" id="arrivalTime" value="08:30" class="border rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                </div>
+                <p class="text-sm text-gray-500 mt-2">
+                    <i class="fas fa-info-circle"></i> 系統會根據距離與時速 (60km/h)，自動回推經過海隧道的時段來計算「不同時段收費」。
+                </p>
+            </div>
+
+            <!-- Model Weights -->
+            <div>
+                <h2 class="text-xl font-semibold mb-4 text-green-600"><i class="fas fa-balance-scale"></i> 模型權重調整</h2>
+                
+                <div class="mb-4">
+                    <div class="flex justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">距離/時間權重 (Distance Factor): <span id="distWeightVal">0.7</span></label>
+                    </div>
+                    <input type="range" id="distWeight" min="0" max="1" step="0.1" value="0.7" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                </div>
+
+                <div>
+                    <div class="flex justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">收費權重 (Price Factor): <span id="priceWeightVal">0.3</span></label>
+                    </div>
+                    <input type="range" id="priceWeight" min="0" max="1" step="0.1" value="0.3" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                </div>
+                
+                <div class="mt-2 text-sm bg-gray-100 p-2 rounded text-center font-mono text-gray-700">
+                    Score = <span id="formulaD">0.7</span> × d + <span id="formulaP">0.3</span> × p
+                </div>
+            </div>
+        </div>
+
+        <!-- Best Choice Highlight -->
+        <div id="bestChoicePanel" class="hidden bg-green-50 border-l-4 border-green-500 p-4 rounded shadow-sm flex flex-col md:flex-row items-center justify-between">
+            <div class="flex items-center">
+                <div class="bg-green-100 p-3 rounded-full mr-4 text-green-600">
+                    <i class="fas fa-trophy text-2xl"></i>
+                </div>
+                <div>
+                    <h3 class="text-lg font-bold text-green-800">最佳路線建議 (Lowest Score)</h3>
+                    <p class="text-green-700 text-lg" id="bestRouteName">--</p>
+                </div>
+            </div>
+            <div class="mt-4 md:mt-0 text-right">
+                <p class="text-sm text-gray-600">預計總分</p>
+                <p class="text-3xl font-bold text-green-700" id="bestRouteScore">0.0</p>
+            </div>
+        </div>
+
+        <!-- Chart Section -->
+        <div class="card p-6">
+            <h2 class="text-xl font-semibold mb-4 text-gray-800">模型得分分析圖表</h2>
+            <div class="relative h-80 w-full">
+                <canvas id="scoreChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Detailed Table -->
+        <div class="card overflow-hidden">
+            <div class="px-6 py-4 border-b border-gray-200 bg-gray-50">
+                <h3 class="text-lg font-medium text-gray-900">詳細數據矩陣</h3>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">路線 (新界 -> 過海)</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">距離 (km)</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">行車時間 (min)</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">總隧道費 ($)</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">綜合得分</th>
+                        </tr>
+                    </thead>
+                    <tbody id="resultsBody" class="bg-white divide-y divide-gray-200 text-sm">
+                        <!-- Rows generated by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Assumptions Footer -->
+        <footer class="text-center text-xs text-gray-500 pb-8">
+            <p>假設條件：平均車速 60 km/h | 無交通擠塞 | 紅/東/西隧採用「不同時段不同收費」(Mon-Sat)</p>
+            <p>距離數據基於 Google Maps 典型路徑估算。</p>
+        </footer>
+
+    </div>
+
+    <script>
+        // --- 1. Data Definitions ---
+
+        // Tunnels (NT to Kowloon) - Fixed Prices
+        const tunnelsNT = [
+            { id: 'lion', name: '獅隧 (Lion Rock)', price: 8 },
+            { id: 'tates', name: '大老山 (Tate\'s)', price: 20 },
+            { id: 'eagle', name: '尖山 (Eagle\'s Nest)', price: 8 }
+        ];
+
+        // Tunnels (Kowloon to HK) - Time Varying Prices
+        const tunnelsHK = [
+            { id: 'cht', name: '紅隧 (CHT)', type: 'harbor' },
+            { id: 'ehc', name: '東隧 (EHC)', type: 'harbor' },
+            { id: 'whc', name: '西隧 (WHC)', type: 'western' }
+        ];
+
+        // Route Matrix: Distances (km) from Tai Wai to Chai Wan
+        // Estimates based on standard driving routes
+        const routeDistances = {
+            'lion_cht': 18.5,
+            'lion_ehc': 20.2,
+            'lion_whc': 25.5,
+            
+            'tates_cht': 19.8,
+            'tates_ehc': 16.8, // Shortest usually
+            'tates_whc': 26.8,
+
+            'eagle_cht': 19.5,
+            'eagle_ehc': 22.0,
+            'eagle_whc': 24.5
+        };
+
+        // --- 2. HKeToll Logic (Time Varying) ---
+        
+        function getHarborToll(tunnelId, arrivalTimeStr, travelMinutes) {
+            // 1. Calculate Entry Time = Arrival Time - Travel Time
+            const [arrH, arrM] = arrivalTimeStr.split(':').map(Number);
+            let entryTotalMinutes = (arrH * 60 + arrM) - travelMinutes;
+            
+            // Normalize day wrapping
+            if (entryTotalMinutes < 0) entryTotalMinutes += 24 * 60;
+            
+            const entryHour = Math.floor(entryTotalMinutes / 60);
+            const entryMin = Math.floor(entryTotalMinutes % 60);
+            
+            // Helper: Convert time to float for easier comparison (e.g., 07:30 -> 7.5)
+            const t = entryHour + entryMin / 60;
+
+            // Simplified HKeToll Logic (Private Car, Mon-Sat)
+            // Peak: 08:08 - 10:15
+            // Normal: 10:15 - 16:30
+            // Evening Peak: 16:30 - 19:00 (Starts transitioning) - simplified for morning query focus
+            // Off-peak: < 07:30
+            
+            // CHT / EHC Prices
+            // Off-peak: 20, Peak: 40, Normal: 30
+            // WHC Prices
+            // Off-peak: 20, Peak: 60, Normal: 30
+
+            let price = 20; // Default Off-peak
+            
+            // Morning Transition & Peak Logic (Focusing on morning commute as per prompt)
+            if (t >= 7.5 && t < 8.13) { // 07:30 - 08:08 (Transition)
+                // Linear approx or simplified max for safety
+                // Let's use a simpler discrete step for this demo
+                price = (tunnelId === 'whc') ? 45 : 32; // Transition avg
+            } else if (t >= 8.13 && t < 10.25) { // 08:08 - 10:15 (PEAK)
+                price = (tunnelId === 'whc') ? 60 : 40;
+            } else if (t >= 10.25 && t < 16.5) { // Normal
+                price = 30;
+            } else if (t >= 16.5 && t < 19.0) { // PM Peak
+                price = (tunnelId === 'whc') ? 60 : 40;
+            } else if (t >= 19.0 && t < 19.5) { // PM Transition
+                 price = (tunnelId === 'whc') ? 45 : 32;
+            }
+
+            return price;
+        }
+
+        // --- 3. Main Calculation ---
+
+        let chartInstance = null;
+
+        function calculate() {
+            const timeStr = document.getElementById('arrivalTime').value;
+            const wD = parseFloat(document.getElementById('distWeight').value);
+            const wP = parseFloat(document.getElementById('priceWeight').value);
+
+            // Update UI Labels
+            document.getElementById('distWeightVal').innerText = wD.toFixed(1);
+            document.getElementById('priceWeightVal').innerText = wP.toFixed(1);
+            document.getElementById('formulaD').innerText = wD.toFixed(1);
+            document.getElementById('formulaP').innerText = wP.toFixed(1);
+            
+            // Link sliders (inverse)
+            if (event && event.target.id === 'distWeight') {
+                document.getElementById('priceWeight').value = (1 - wD).toFixed(1);
+                document.getElementById('priceWeightVal').innerText = (1 - wD).toFixed(1);
+                document.getElementById('formulaP').innerText = (1 - wD).toFixed(1);
+            } else if (event && event.target.id === 'priceWeight') {
+                document.getElementById('distWeight').value = (1 - wP).toFixed(1);
+                document.getElementById('distWeightVal').innerText = (1 - wP).toFixed(1);
+                document.getElementById('formulaD').innerText = (1 - wP).toFixed(1);
+            }
+            
+            // Re-read after sync
+            const finalWD = parseFloat(document.getElementById('distWeight').value);
+            const finalWP = parseFloat(document.getElementById('priceWeight').value);
+
+
+            const results = [];
+
+            // Iterate all combinations
+            tunnelsNT.forEach(nt => {
+                tunnelsHK.forEach(hk => {
+                    const key = `${nt.id}_${hk.id}`;
+                    const dist = routeDistances[key];
+                    const speed = 60; // km/h
+                    const timeMins = (dist / speed) * 60;
+                    
+                    const tollNT = nt.price;
+                    const tollHK = getHarborToll(hk.id, timeStr, timeMins);
+                    const totalToll = tollNT + tollHK;
+
+                    // Formula: Score = wD * dist + wP * toll
+                    const score = (finalWD * dist) + (finalWP * totalToll);
+
+                    results.push({
+                        name: `${nt.name} + ${hk.name}`,
+                        dist: dist,
+                        time: timeMins,
+                        toll: totalToll,
+                        score: score,
+                        tollBreakdown: `${nt.name}($${tollNT}) + ${hk.name}($${tollHK})`
+                    });
+                });
+            });
+
+            // Sort by Score (Ascending)
+            results.sort((a, b) => a.score - b.score);
+
+            updateUI(results);
+        }
+
+        function updateUI(results) {
+            // Update Best Choice
+            const best = results[0];
+            document.getElementById('bestChoicePanel').classList.remove('hidden');
+            document.getElementById('bestRouteName').innerText = best.name;
+            document.getElementById('bestRouteScore').innerText = best.score.toFixed(2);
+
+            // Update Table
+            const tbody = document.getElementById('resultsBody');
+            tbody.innerHTML = '';
+            results.forEach((r, index) => {
+                const tr = document.createElement('tr');
+                if (index === 0) tr.classList.add('bg-green-50');
+                tr.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap font-medium text-gray-900">${r.name}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-gray-500">${r.dist.toFixed(1)}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-gray-500">${r.time.toFixed(0)} min</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-gray-500 font-bold">$${r.toll} <span class="text-xs font-normal text-gray-400 block">${r.tollBreakdown}</span></td>
+                    <td class="px-6 py-4 whitespace-nowrap font-bold ${index === 0 ? 'text-green-600' : 'text-gray-800'}">${r.score.toFixed(2)}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Update Chart
+            updateChart(results);
+        }
+
+        function updateChart(results) {
+            const ctx = document.getElementById('scoreChart').getContext('2d');
+            
+            // Limit to top 5 for clarity, or show all
+            const chartData = results; 
+
+            const labels = chartData.map(r => r.name.replace('Lion Rock', '獅隧').replace('Tate\'s', '大老山').replace('Eagle\'s Nest', '尖山').replace('CHT','紅').replace('EHC','東').replace('WHC','西'));
+            const scores = chartData.map(r => r.score);
+            const distContrib = chartData.map(r => r.dist * parseFloat(document.getElementById('distWeight').value));
+            const costContrib = chartData.map(r => r.toll * parseFloat(document.getElementById('priceWeight').value));
+
+            if (chartInstance) {
+                chartInstance.destroy();
+            }
+
+            chartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: '距離成本 (Weighted Distance)',
+                            data: distContrib,
+                            backgroundColor: 'rgba(59, 130, 246, 0.6)', // Blue
+                            borderColor: 'rgba(59, 130, 246, 1)',
+                            borderWidth: 1,
+                            stack: 'Stack 0'
+                        },
+                        {
+                            label: '隧道費成本 (Weighted Toll)',
+                            data: costContrib,
+                            backgroundColor: 'rgba(239, 68, 68, 0.6)', // Red
+                            borderColor: 'rgba(239, 68, 68, 1)',
+                            borderWidth: 1,
+                            stack: 'Stack 0'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                footer: (items) => {
+                                    const total = items.reduce((a, b) => a + b.raw, 0);
+                                    return 'Total Score: ' + total.toFixed(2);
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: 'Score (Lower is Better)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Listeners
+        document.getElementById('arrivalTime').addEventListener('change', calculate);
+        document.getElementById('distWeight').addEventListener('input', calculate);
+        document.getElementById('priceWeight').addEventListener('input', calculate);
+
+        // Init
+        window.onload = calculate;
+
+    </script>
+</body>
+</html>
